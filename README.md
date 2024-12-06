@@ -9,13 +9,13 @@ The AuthKit library for Next.js provides convenient helpers for authentication a
 Install the package with:
 
 ```
-npm i @workos-inc/authkit-nextjs
+npm i @lleverage/authkit-nextjs
 ```
 
 or
 
 ```
-yarn add @workos-inc/authkit-nextjs
+yarn add @lleverage/authkit-nextjs
 ```
 
 ## Video tutorial
@@ -67,7 +67,7 @@ Not needed for most use cases.
 WorkOS requires that you have a callback URL to redirect users back to after they've authenticated. In your Next.js app, [expose an API route](https://nextjs.org/docs/app/building-your-application/routing/route-handlers) and add the following.
 
 ```ts
-import { handleAuth } from '@workos-inc/authkit-nextjs';
+import { handleAuth } from '@lleverage/authkit-nextjs';
 
 export const GET = handleAuth();
 ```
@@ -92,9 +92,9 @@ export const GET = handleAuth({ returnPathname: '/dashboard' });
 This library relies on [Next.js middleware](https://nextjs.org/docs/app/building-your-application/routing/middleware) to provide session management for routes. Put the following in your `middleware.ts` file in the root of your project:
 
 ```ts
-import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware } from '@lleverage/authkit-nextjs';
 
-export default authkitMiddleware();
+export default createAuthKitMiddleware();
 
 // Match against pages that require auth
 // Leave this out if you want auth on every resource (including images, css etc.)
@@ -112,12 +112,12 @@ The middleware can be configured with several options.
 
 #### Custom redirect URI
 
-In cases where you need your redirect URI to be set dynamically (e.g. Vercel preview deployments), use the `redirectUri` option in `authkitMiddleware`:
+In cases where you need your redirect URI to be set dynamically (e.g. Vercel preview deployments), use the `redirectUri` option in `createAuthKitMiddleware`:
 
 ```ts
-import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware } from '@lleverage/authkit-nextjs';
 
-export default authkitMiddleware({
+export default createAuthKitMiddleware({
   redirectUri: 'https://foo.example.com/callback',
 });
 
@@ -135,7 +135,7 @@ Custom redirect URIs will be used over a redirect URI configured in the environm
 Use `AuthKitProvider` to wrap your app layout, which adds some protections for auth edge cases.
 
 ```jsx
-import { AuthKitProvider } from '@workos-inc/authkit-nextjs';
+import { AuthKitProvider } from '@lleverage/authkit-nextjs';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -154,7 +154,7 @@ For pages where you want to display a signed-in and signed-out view, use `withAu
 
 ```jsx
 import Link from 'next/link';
-import { getSignInUrl, getSignUpUrl, withAuth, signOut } from '@workos-inc/authkit-nextjs';
+import { getSignInUrl, getSignUpUrl, withAuth, signOut } from '@lleverage/authkit-nextjs';
 
 export default async function HomePage() {
   // Retrieves the user from the session or returns `null` if no user is signed in
@@ -204,9 +204,9 @@ Enabling `ensureSignedIn` will redirect users to AuthKit if they attempt to acce
 The default behavior of this library is to request authentication via the `withAuth` method on a per-page basis. There are some use cases where you don't want to call `withAuth` (e.g. you don't need user data for your page) or if you'd prefer a "secure by default" approach where every route defined in your middleware matcher is protected unless specified otherwise. In those cases you can opt-in to use middleware auth instead:
 
 ```ts
-import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware } from '@lleverage/authkit-nextjs';
 
-export default authkitMiddleware({
+export default createAuthKitMiddleware({
   middlewareAuth: {
     enabled: true,
     unauthenticatedPaths: ['/', '/about'],
@@ -227,12 +227,12 @@ In the above example the `/admin` page will require a user to be signed in, wher
 Sometimes it's useful to check the user session if you want to compose custom middleware. The `getSession` helper method will retrieve the session from the cookie and verify the access token.
 
 ```ts
-import { authkitMiddleware, getSession } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware, getSession } from '@lleverage/authkit-nextjs';
 import { NextRequest, NextFetchEvent } from 'next/server';
 
 export default async function middleware(request: NextRequest, event: NextFetchEvent) {
-  // authkitMiddleware will handle refreshing the session if the access token has expired
-  const response = await authkitMiddleware()(request, event);
+  // createAuthKitMiddleware will handle refreshing the session if the access token has expired
+  const response = await createAuthKitMiddleware()(request, event);
 
   // If session is undefined, the user is not authenticated
   const session = await getSession(response);
@@ -256,7 +256,7 @@ Render the `Impersonation` component in your app so that it is clear when someon
 The component will display a frame with some information about the impersonated user, as well as a button to stop impersonating.
 
 ```jsx
-import { Impersonation } from '@workos-inc/authkit-nextjs';
+import { Impersonation } from '@lleverage/authkit-nextjs';
 
 export default function App() {
   return (
@@ -273,7 +273,7 @@ export default function App() {
 Sometimes it is useful to obtain the access token directly, for instance to make API requests to another service.
 
 ```jsx
-import { withAuth } from '@workos-inc/authkit-nextjs';
+import { withAuth } from '@lleverage/authkit-nextjs';
 
 export default async function HomePage() {
   const { accessToken } = await withAuth();
@@ -300,12 +300,12 @@ The `organizationId` parameter can be passed to `refreshSession` in order to swi
 
 ### Sign up paths
 
-The `signUpPaths` option can be passed to `authkitMiddleware` to specify paths that should use the 'sign-up' screen hint when redirecting to AuthKit. This is useful for cases where you want a path that mandates authentication to be treated as a sign up page.
+The `signUpPaths` option can be passed to `createAuthKitMiddleware` to specify paths that should use the 'sign-up' screen hint when redirecting to AuthKit. This is useful for cases where you want a path that mandates authentication to be treated as a sign up page.
 
 ```ts
-import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware } from '@lleverage/authkit-nextjs';
 
-export default authkitMiddleware({
+export default createAuthKitMiddleware({
   signUpPaths: ['/account/sign-up', '/dashboard/:path*'],
 });
 ```
@@ -315,9 +315,9 @@ export default authkitMiddleware({
 To enable debug logs, initialize the middleware with the debug flag enabled.
 
 ```js
-import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
+import { createAuthKitMiddleware } from '@lleverage/authkit-nextjs';
 
-export default authkitMiddleware({ debug: true });
+export default createAuthKitMiddleware({ debug: true });
 ```
 
 ### Troubleshooting

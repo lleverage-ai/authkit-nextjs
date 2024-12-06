@@ -15,7 +15,7 @@ import { parse, tokensToRegexp } from 'path-to-regexp';
 
 const sessionHeaderName = 'x-workos-session';
 const middlewareHeaderName = 'x-workos-middleware';
-const redirectUriHeaderName = 'x-redirect-uri';
+// const redirectUriHeaderName = 'x-redirect-uri';
 const signUpPathsHeaderName = 'x-sign-up-paths';
 
 const JWKS = createRemoteJWKSet(new URL(workos.userManagement.getJwksUrl(WORKOS_CLIENT_ID)));
@@ -30,7 +30,7 @@ async function updateSession(
   middlewareAuth: AuthkitMiddlewareAuth,
   redirectUri: string,
   signUpPaths: string[],
-) {
+): Promise<NextResponse> {
   if (!redirectUri && !WORKOS_REDIRECT_URI) {
     throw new Error('You must provide a redirect URI in the AuthKit middleware or in the environment variables.');
   }
@@ -38,75 +38,51 @@ async function updateSession(
   const session = await getSessionFromCookie();
   const newRequestHeaders = new Headers(request.headers);
 
-  // We store the current request url in a custom header, so we can always have access to it
-  // This is because on hard navigations we don't have access to `next-url` but need to get the current
-  // `pathname` to be able to return the users where they came from before sign-in
+  // Store current request url in header
   newRequestHeaders.set('x-url', request.url);
-
-  // Record that the request was routed through the middleware so we can check later for DX purposes
   newRequestHeaders.set(middlewareHeaderName, 'true');
 
-  // Record the sign up paths so we can use it later
   if (signUpPaths.length > 0) {
     newRequestHeaders.set(signUpPathsHeaderName, signUpPaths.join(','));
   }
 
-  let url;
+  // Set up URL without using redirectUri header
+  const baseUrl = new URL(WORKOS_REDIRECT_URI);
 
-  // If the redirect URI is set, store it in the headers so we can use it later
-  if (redirectUri) {
-    newRequestHeaders.set(redirectUriHeaderName, redirectUri);
-    url = new URL(redirectUri);
-  } else {
-    url = new URL(WORKOS_REDIRECT_URI);
-  }
-
+  // Clear session header
   newRequestHeaders.delete(sessionHeaderName);
 
+  // Handle auto-adding auth paths to prevent login loops
   if (
     middlewareAuth.enabled &&
-    url.pathname === request.nextUrl.pathname &&
-    !middlewareAuth.unauthenticatedPaths.includes(url.pathname)
+    baseUrl.pathname === request.nextUrl.pathname &&
+    !middlewareAuth.unauthenticatedPaths.includes(baseUrl.pathname)
   ) {
-    // In the case where:
-    // - We're using middleware auth mode
-    // - The redirect URI is in the middleware matcher
-    // - The redirect URI isn't in the unauthenticatedPaths array
-    //
-    // then we would get stuck in a login loop due to the redirect happening before the session is set.
-    // It's likely that the user accidentally forgot to add the path to unauthenticatedPaths, so we add it here.
-    middlewareAuth.unauthenticatedPaths.push(url.pathname);
+    middlewareAuth.unauthenticatedPaths.push(baseUrl.pathname);
   }
 
-  const matchedPaths: string[] = middlewareAuth.unauthenticatedPaths.filter((pathGlob) => {
+  // Check for matched paths
+  const matchedPaths = middlewareAuth.unauthenticatedPaths.filter((pathGlob) => {
     const pathRegex = getMiddlewareAuthPathRegex(pathGlob);
-
     return pathRegex.exec(request.nextUrl.pathname);
   });
 
-  // If the user is logged out and this path isn't on the allowlist for logged out paths, redirect to AuthKit.
+  // Handle unauthenticated users on protected routes
   if (middlewareAuth.enabled && matchedPaths.length === 0 && !session) {
-    if (debug) console.log(`Unauthenticated user on protected route ${request.url}, redirecting to AuthKit`);
+    if (debug) {
+      console.log(`Unauthenticated user on protected route ${request.url}, redirecting to AuthKit`);
+    }
 
     const redirectTo = await getAuthorizationUrl({
       returnPathname: getReturnPathname(request.url),
-      redirectUri: redirectUri ?? WORKOS_REDIRECT_URI,
+      redirectUri: WORKOS_REDIRECT_URI,
       screenHint: getScreenHint(signUpPaths, request.nextUrl.pathname),
     });
 
-    // Fall back to standard Response if NextResponse is not available.
-    // This is to support Next.js 13.
-    return NextResponse?.redirect
-      ? NextResponse.redirect(redirectTo)
-      : new Response(null, {
-          status: 302,
-          headers: {
-            Location: redirectTo,
-          },
-        });
+    return NextResponse.redirect(redirectTo);
   }
 
-  // If no session, just continue
+  // Handle no session case
   if (!session) {
     return NextResponse.next({
       request: { headers: newRequestHeaders },
@@ -115,33 +91,39 @@ async function updateSession(
 
   const hasValidSession = await verifyAccessToken(session.accessToken);
   const cookieName = WORKOS_COOKIE_NAME || 'wos-session';
-
   const nextCookies = await cookies();
 
+  // Handle valid session
   if (hasValidSession) {
     if (debug) console.log('Session is valid');
-    // set the x-workos-session header according to the current cookie value
-    newRequestHeaders.set(sessionHeaderName, nextCookies.get(cookieName)!.value);
+    const cookieValue = nextCookies.get(cookieName)?.value;
+    if (cookieValue) {
+      newRequestHeaders.set(sessionHeaderName, cookieValue);
+    }
     return NextResponse.next({
       request: { headers: newRequestHeaders },
     });
   }
 
   try {
-    if (debug) console.log(`Session invalid. Refreshing access token that ends in ${session.accessToken.slice(-10)}`);
+    if (debug) {
+      console.log(`Session invalid. Refreshing access token that ends in ${session.accessToken.slice(-10)}`);
+    }
 
     const { org_id: organizationId } = decodeJwt<AccessToken>(session.accessToken);
 
-    // If the session is invalid (i.e. the access token has expired) attempt to re-authenticate with the refresh token
+    // Attempt to refresh the session
     const { accessToken, refreshToken, user, impersonator } = await workos.userManagement.authenticateWithRefreshToken({
       clientId: WORKOS_CLIENT_ID,
       refreshToken: session.refreshToken,
       organizationId,
     });
 
-    if (debug) console.log(`Refresh successful. New access token ends in ${accessToken.slice(-10)}`);
+    if (debug) {
+      console.log(`Refresh successful. New access token ends in ${accessToken.slice(-10)}`);
+    }
 
-    // Encrypt session with new access and refresh tokens
+    // Create new encrypted session
     const encryptedSession = await encryptSession({
       accessToken,
       refreshToken,
@@ -150,32 +132,27 @@ async function updateSession(
       oauthTokens: session.oauthTokens,
     });
 
+    // Set up response with new session
     newRequestHeaders.set(sessionHeaderName, encryptedSession);
-
     const response = NextResponse.next({
       request: { headers: newRequestHeaders },
     });
-    // update the cookie
-    response.cookies.set(cookieName, encryptedSession, getCookieOptions(redirectUri));
+
+    // Set the cookie with the new session
+    response.cookies.set(cookieName, encryptedSession, getCookieOptions(WORKOS_REDIRECT_URI));
+
     return response;
   } catch (e) {
-    if (debug) console.log('Failed to refresh. Deleting cookie and redirecting.', e);
+    if (debug) {
+      console.log('Failed to refresh. Deleting cookie and redirecting.', e);
+    }
 
+    // Delete the cookie
     nextCookies.delete(cookieName);
-  }
 
-  // If we get here, the session is invalid and the user needs to sign in again.
-  // We redirect to the current URL which will trigger the middleware again.
-  // This is outside of the above block because you cannot redirect in Next.js
-  // from inside a try/catch block.
-  return NextResponse?.redirect
-    ? NextResponse.redirect(request.url)
-    : new Response(null, {
-        status: 307,
-        headers: {
-          Location: request.url,
-        },
-      });
+    // Redirect to trigger re-authentication
+    return NextResponse.redirect(request.url);
+  }
 }
 
 async function refreshSession(options: {
